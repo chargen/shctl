@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# shctl - the swiss army knife of remote scripting
+#         https://github.com/hifi/shctl
+
+# Copyright (c) 2015 Toni Spets <toni.spets@iki.fi>
+
+# Permission to use, copy, modify, and distribute this software for any
+# purpose with or without fee is hereby granted, provided that the above
+# copyright notice and this permission notice appear in all copies.
+
+# THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+# WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+# ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+# WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+# ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+# OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+set -ueo pipefail
+
+error() { echo "$@" >&2; exit 1; }
+
+[ $# -gt 1 ] || error "usage: $0 <host> <script> [args]"
+
+host=$1
+script=$2
+
+[ -f $script ] || script=$script.ctl.sh
+[ -f $script ] || error "$script not found"
+
+shift 2
+
+{
+    inc=$(dirname $script)/shctl.inc.sh
+    [ -f $inc ] || inc=
+
+    cat - $inc $script <<'SHLIB'
+        set -ue
+
+        shctl.err() { echo "[shctl.err] $@" >&2; exit 1; }
+        shctl.wrn() { echo "[shctl.wrn] $@" >&2; }
+        shctl.nfo() { echo "[shctl.nfo] $@" >&2; }
+        shctl.root() { [ $EUID -eq 0 ] || shctl.err "This script requires root access."; }
+
+        shctl.prog() {
+            for i in $@; do
+                which $i &>/dev/null || shctl.err "Program '$i' missing from target system PATH."
+            done
+        }
+
+        shctl.linux() {
+            [ "$(uname -s)" = "Linux" ] || shctl.err "This script requires Linux."
+            [ $# -eq 0 ] && return 0
+
+            [ -f /etc/os-release ] || shctl.err "This script requires /etc/os-release"
+            . /etc/os-release
+
+            [ "${ID,,}" = "${1,,}" ] || shctl.err "Distribution mismatch, requiring $1, running on $NAME $VERSION"
+
+            if [ $# -gt 1 ]; then
+                 [ $VERSION_ID -eq $2 ] || shctl.err "Release mismatch, requiring $2, running on $NAME $VERSION"
+            fi
+        }
+SHLIB
+} | {
+    if [ "$host" = "localhost" ]; then
+        /usr/bin/env bash -s -- $@
+    else
+        ${SSH-ssh} $host "/usr/bin/env bash -s -- $@"
+    fi
+}
